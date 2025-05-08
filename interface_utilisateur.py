@@ -117,6 +117,8 @@ class FenetrePrincipale:
         self.bouton_ajouter = ttk.Button(self.label_ajout, text="Ajouter", command=self.ajouter_nouveau_medicament)
         self.bouton_ajouter.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
 
+
+        
         # --- Bouton d'exportation ---
         self.bouton_exporter = ttk.Button(master, text="Exporter les ventes du jour", command=self.exporter_rapport)
 
