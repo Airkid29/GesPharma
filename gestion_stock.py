@@ -1,148 +1,110 @@
-from base_de_donnees import charger_medicaments, sauvegarder_medicaments
+from db_manager import DBManager
 
 class GestionnaireStock:
     def __init__(self):
-        """Initialise le gestionnaire de stock en chargeant les médicaments."""
-        self.medicaments = self._charger_stock()
+        """Initialise le gestionnaire de stock."""
+        self.db = DBManager()
+        self.medicaments = []
+        self.charger_stock()
 
-    def _charger_stock(self):
+    def charger_stock(self):
         """Charge le stock de médicaments depuis la base de données."""
-        return charger_medicaments()
-
-    def _sauvegarder_stock(self):
-        """Sauvegarde le stock de médicaments dans la base de données."""
-        sauvegarder_medicaments(self.medicaments)
+        query = "SELECT * FROM medicaments"
+        try:
+            self.medicaments = self.db.fetch_all(query)
+            # Conversion des types pour compatibilité avec l'interface existante (prix en str, stock en str ?)
+            # L'interface attend des dicts. fetch_all retourne déjà des dicts si configuré.
+            # Cependant, mysql retourne Decimal, datetime etc.
+            # On va s'assurer que c'est manipulable.
+            for med in self.medicaments:
+                # Normalisation pour l'affichage
+                med['prix'] = str(med['prix'])
+                med['stock'] = str(med['stock'])
+                if 'date_expiration' in med and med['date_expiration']:
+                    med['date_expiration'] = str(med['date_expiration'])
+                
+        except Exception as e:
+            print(f"Erreur chargement stock: {e}")
+            self.medicaments = []
+        return self.medicaments
 
     def get_medicament(self, nom_medicament):
-        """
-        Recherche un médicament dans le stock par son nom (sensible à la casse).
-
-        Args:
-            nom_medicament (str): Le nom du médicament à rechercher.
-
-        Returns:
-            dict or None: Le dictionnaire représentant le médicament s'il est trouvé, sinon None.
-        """
+        """Recherche un médicament dans le cache."""
+        # On pourrait faire une requête DB, mais pour l'instant on utilise le cache
         for medicament in self.medicaments:
             if medicament.get('nom') == nom_medicament:
                 return medicament
         return None
 
+    def search_medicaments(self, query_str):
+        """Recherche DB directe (PLUS ROBUSTE)."""
+        sql = "SELECT * FROM medicaments WHERE nom LIKE %s"
+        # Note: DBManager._adapt_query gère le %s -> ? pour sqlite
+        # Mais pour sqlite le LIKE est 'LIKE ?'.
+        # Pour les wildcards, on passe '%query%'
+        param = f"%{query_str}%"
+        results = self.db.fetch_all(sql, (param,))
+        return results
+
     def verifier_disponibilite(self, nom_medicament, quantite_demandee):
-        """
-        Vérifie si un médicament est disponible en quantité suffisante.
-
-        Args:
-            nom_medicament (str): Le nom du médicament.
-            quantite_demandee (int): La quantité demandée.
-
-        Returns:
-            bool: True si le médicament est disponible en quantité suffisante, False sinon.
-        """
-        medicament = self.get_medicament(nom_medicament)
-        if medicament and medicament.get('stock'):
-            try:
-                stock_actuel = int(medicament['stock'])
-                return stock_actuel >= quantite_demandee
-            except ValueError:
-                print(f"Erreur : La valeur du stock pour '{nom_medicament}' n'est pas un nombre.")
-                return False
+        med = self.get_medicament(nom_medicament) # Check cache first
+        if med:
+            # Vérification DB pour être sûr
+            sql = "SELECT stock FROM medicaments WHERE nom = %s"
+            db_res = self.db.fetch_one(sql, (nom_medicament,))
+            if db_res:
+                return int(db_res['stock']) >= quantite_demandee
         return False
 
     def vendre_medicament(self, nom_medicament, quantite_vendue):
-        """
-        Vend un médicament et met à jour le stock.
-
-        Args:
-            nom_medicament (str): Le nom du médicament vendu.
-            quantite_vendue (int): La quantité vendue.
-
-        Returns:
-            bool: True si la vente a réussi (médicament trouvé et stock suffisant), False sinon.
-        """
-        medicament = self.get_medicament(nom_medicament)
-        if medicament and medicament.get('stock'):
-            try:
-                stock_actuel = int(medicament['stock'])
-                if stock_actuel >= quantite_vendue:
-                    medicament['stock'] = str(stock_actuel - quantite_vendue)
-                    self._sauvegarder_stock()
-                    return True
-                else:
-                    print(f"Stock insuffisant pour '{nom_medicament}'. Stock actuel : {stock_actuel}, quantité demandée : {quantite_vendue}.")
-                    return False
-            except ValueError:
-                print(f"Erreur : La valeur du stock pour '{nom_medicament}' n'est pas un nombre.")
-                return False
+        # On peut faire un UPDATE direct avec calcul
+        sql = "UPDATE medicaments SET stock = stock - %s WHERE nom = %s AND stock >= %s"
+        # Note: UPDATE avec clause WHERE pour atomicité (prevent negative stock)
+        
+        # Cependant, DBManager.execute_query retourne rowid, pas rowcount. 
+        # Pour faire simple : check then update.
+        if self.verifier_disponibilite(nom_medicament, quantite_vendue):
+            # Update
+            sql_update = "UPDATE medicaments SET stock = stock - %s WHERE nom = %s"
+            self.db.execute_query(sql_update, (quantite_vendue, nom_medicament))
+            self.charger_stock() # Rafraîchir le cache
+            return True
         else:
-            print(f"Médicament '{nom_medicament}' non trouvé.")
+            print(f"Stock insuffisant pour {nom_medicament}")
             return False
 
     def ajouter_medicament(self, nouveau_medicament):
+        # Insert
+        sql = """
+            INSERT INTO medicaments (nom, prix, stock, date_expiration, numero_lot)
+            VALUES (%s, %s, %s, %s, %s)
         """
-        Ajoute un nouveau médicament au stock.
-
-        Args:
-            nouveau_medicament (dict): Un dictionnaire représentant le nouveau médicament.
-                                       Doit avoir les mêmes clés que les autres médicaments.
-        """
-        self.medicaments.append(nouveau_medicament)
-        self._sauvegarder_stock()
-        print(f"Le médicament '{nouveau_medicament.get('nom', 'Nouveau médicament')}' a été ajouté au stock.")
+        params = (
+            nouveau_medicament.get('nom'),
+            nouveau_medicament.get('prix'),
+            nouveau_medicament.get('stock'),
+            nouveau_medicament.get('date_expiration'),
+            nouveau_medicament.get('numero_lot')
+        )
+        self.db.execute_query(sql, params)
+        self.charger_stock()
+        print(f"Médicament {nouveau_medicament.get('nom')} ajouté.")
 
     def modifier_medicament(self, nom_medicament, nouvelles_informations):
-        """
-        Modifie les informations d'un médicament existant.
-
-        Args:
-            nom_medicament (str): Le nom du médicament à modifier.
-            nouvelles_informations (dict): Un dictionnaire contenant les nouvelles informations.
-                                        Les clés doivent correspondre aux noms des colonnes.
-        """
-        medicament = self.get_medicament(nom_medicament)
-        if medicament:
-            medicament.update(nouvelles_informations)
-            self._sauvegarder_stock()
-            print(f"Les informations pour '{nom_medicament}' ont été mises à jour.")
-        else:
-            print(f"Médicament '{nom_medicament}' non trouvé.")
+        # Update dynamique
+        # On suppose que 'nouvelles_informations' contient les clés col.
+        set_clauses = []
+        params = []
+        for key, value in nouvelles_informations.items():
+            set_clauses.append(f"{key} = %s")
+            params.append(value)
+        
+        if set_clauses:
+            sql = f"UPDATE medicaments SET {', '.join(set_clauses)} WHERE nom = %s"
+            params.append(nom_medicament)
+            self.db.execute_query(sql, tuple(params))
+            self.charger_stock()
 
 if __name__ == '__main__':
-    # Exemple d'utilisation du gestionnaire de stock
-    gestionnaire = GestionnaireStock()
-
-    # Afficher le stock initial
-    print("Stock initial :")
-    for medicament in gestionnaire.medicaments:
-        print(medicament)
-
-    # Vérifier la disponibilité
-    nom_a_verifier = "Doliprane 1000mg"
-    quantite_a_verifier = 5
-    if gestionnaire.verifier_disponibilite(nom_a_verifier, quantite_a_verifier):
-        print(f"\n{nom_a_verifier} est disponible en quantité suffisante ({quantite_a_verifier}).")
-    else:
-        print(f"\n{nom_a_verifier} n'est pas disponible en quantité suffisante ({quantite_a_verifier}).")
-
-    # Vendre un médicament
-    nom_a_vendre = "Spasfon"
-    quantite_a_vendre = 2
-    if gestionnaire.vendre_medicament(nom_a_vendre, quantite_a_vendre):
-        print(f"\n{quantite_a_vendre} unités de {nom_a_vendre} ont été vendues.")
-
-    # Afficher le stock après la vente
-    print("\nStock après la vente :")
-    for medicament in gestionnaire.medicaments:
-        print(medicament)
-
-    # Ajouter un nouveau médicament
-    nouveau_medicament = {"nom": "Vitamine C 500mg", "prix": "5.00", "stock": "200", "date_expiration": "2028-06-30", "numero_lot": "LOT2025D"}
-    gestionnaire.ajouter_medicament(nouveau_medicament)
-
-    # Modifier un médicament
-    gestionnaire.modifier_medicament("Doliprane 1000mg", {"prix": "3.75"})
-
-    # Afficher le stock final
-    print("\nStock final :")
-    for medicament in gestionnaire.medicaments:
-        print(medicament)
+    gs = GestionnaireStock()
+    print("Stock actuel:", gs.medicaments)
