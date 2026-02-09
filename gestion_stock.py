@@ -57,14 +57,7 @@ class GestionnaireStock:
         return False
 
     def vendre_medicament(self, nom_medicament, quantite_vendue):
-        # On peut faire un UPDATE direct avec calcul
-        sql = "UPDATE medicaments SET stock = stock - %s WHERE nom = %s AND stock >= %s"
-        # Note: UPDATE avec clause WHERE pour atomicité (prevent negative stock)
-        
-        # Cependant, DBManager.execute_query retourne rowid, pas rowcount. 
-        # Pour faire simple : check then update.
         if self.verifier_disponibilite(nom_medicament, quantite_vendue):
-            # Update
             sql_update = "UPDATE medicaments SET stock = stock - %s WHERE nom = %s"
             self.db.execute_query(sql_update, (quantite_vendue, nom_medicament))
             self.charger_stock() # Rafraîchir le cache

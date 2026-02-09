@@ -14,19 +14,12 @@ class GestionnaireVentes:
         prix_total = quantite * prix_unitaire
         
         # 1. Créer l'entrée dans la table 'ventes'
-        # Pour simplifier on crée une vente par article ici, mais idéalement c'est un panier.
-        # Restons sur le flow actuel : 1 clic = 1 vente.
         sql_vente = "INSERT INTO ventes (date_vente, vendeur_id, total) VALUES (%s, %s, %s)"
-        # Note: mysql datetime format: 'YYYY-MM-DD HH:MM:SS'. datetime.now() works mostly ?
-        # DBManager._adapt_query handles basics but parameter binding usually handles datetime objects correctly in python connectors.
         vente_id = self.db.execute_query(sql_vente, (date_vente, vendeur_id, prix_total))
         
-        # 2. Créer la ligne de vente (optionnel si on suit le modèle simple actuel, mais demandé "lignes_vente")
-        # Il faut l'ID du médicament.
+        # 2. Créer la ligne de vente
         med_id = medicament.get('id') 
-        # Si med_id manque (chargé depuis CSV legacy ou autre), faut le trouver.
         if not med_id:
-             # Look it up
              res = self.db.fetch_one("SELECT id FROM medicaments WHERE nom = %s", (medicament['nom'],))
              if res:
                  med_id = res['id']
@@ -63,27 +56,12 @@ class GestionnaireVentes:
         return ticket
 
     def get_ventes_du_jour(self):
-        # Récupérer depuis la BD date = today
-        # Sur SQLite : strftime('%Y-%m-%d', date_vente)
-        # Sur MySQL : DATE(date_vente)
-        # On va tenter une approche python-side pour compatibilité max si le SQL differs trop
-        # Ou SQL générique : 
-        # SELECT * FROM ventes WHERE date_vente >= TODAY ...
-        
-        # Approche simple : Fetch all recent ? 
-        # Let's try Query.
         today = datetime.now().strftime("%Y-%m-%d")
-        # SQL : LIKE '2025-01-01%' works if stored as string/timestamp iso
         sql = "SELECT * FROM ventes WHERE date_vente LIKE %s ORDER BY date_vente DESC"
         formatted_date = f"{today}%"
         
         raw_ventes = self.db.fetch_all(sql, (formatted_date,))
         
-        # Enrichir avec nom médicament (qui n'est pas dans la table vente directement si on normalise)
-        # Mais dans le code actuel 'enregistrer_vente' retourne un dict riche.
-        # Ici get_ventes_du_jour est utilisé pour l'export.
-        
-        # Reconstitution des objets ventes pour l'export
         ventes_enrichies = []
         for v in raw_ventes:
             # Get ligne de vente
